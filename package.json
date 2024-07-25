@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-mediawiki-links",
   "description": "Parse double-bracket links to articles on MediaWiki-based websites from messages",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
@@ -9,11 +9,29 @@
     "dist"
   ],
   "license": "MIT",
+  "homepage": "https://github.com/DGCK81LNN/koishi-plugin-mediawiki-links",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DGCK81LNN/koishi-plugin-mediawiki-links.git"
+  },
   "keywords": [
     "chatbot",
     "koishi",
     "plugin"
   ],
+  "koishi": {
+    "description": {
+      "zh": "解析消息中的双方括号维基链接，支持任何基于 MediaWiki 的维基"
+    },
+    "locales": [
+      "zh"
+    ],
+    "services": {
+      "required": [
+        "http"
+      ]
+    }
+  },
   "peerDependencies": {
     "koishi": "^4.17.8"
   }

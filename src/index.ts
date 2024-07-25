@@ -2,6 +2,7 @@ import { Computed, Context, Schema, h } from "koishi"
 import { resolve as urlResolve } from "url"
 
 export const name = "mediawiki-links"
+export const inject = ["http"]
 
 export interface Config {
   wikis: {
