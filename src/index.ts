@@ -33,9 +33,9 @@ export const Config: Schema<Config> = Schema.object({
         endpoint: "https://zh.moegirl.org.cn/api.php",
       },
     ]),
-  defaultWikis: Schema.computed(
-    Schema.array(String).required().role("table")
-  ).description("无 wiki 前缀时默认尝试查询哪些 wiki。"),
+  defaultWikis: Schema.computed(Schema.array(String).role("table")).description(
+    "无 wiki 前缀时默认尝试查询哪些 wiki。"
+  ),
 })
 
 interface WikiConfig {
