@@ -17,7 +17,6 @@ export const Config: Schema<Config> = Schema.object({
     Schema.object({
       prefix: Schema.array(String)
         .role("table")
-        .required()
         .description("维基名称（同时用作跨 wiki 前缀）。"),
       endpoint: Schema.string()
         .required()
@@ -25,7 +24,6 @@ export const Config: Schema<Config> = Schema.object({
         .role("textarea"),
     })
   )
-    .required()
     .description("维基列表。")
     .default([
       {
@@ -118,7 +116,7 @@ namespace Wiki {
 
 export async function apply(ctx: Context, config: Config) {
   const logger = ctx.logger(name)
-  logger.level = 3
+  //logger.level = 3
 
   const wikiDict: Record<string, Wiki | null> = Object.create(null)
   ctx.on("ready", () => {
