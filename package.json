@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-mediawiki-links",
   "description": "Parse double-bracket links to articles on MediaWiki-based websites from messages",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
@@ -33,6 +33,12 @@
     }
   },
   "peerDependencies": {
+    "@dgck81lnn/koishi-plugin-auto-delete-response": "^0.1.0",
     "koishi": "^4.17.8"
+  },
+  "peerDependenciesMeta": {
+    "@dgck81lnn/koishi-plugin-auto-delete-response": {
+      "optional": true
+    }
   }
 }
