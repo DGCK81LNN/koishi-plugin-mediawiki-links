@@ -1,5 +1,6 @@
-import { Argv, Computed, Context, Schema, Session, SessionError, h } from "koishi"
+import { Argv, Computed, Context, Schema, Session, h } from "koishi"
 import { resolve as urlResolve } from "url"
+
 import type {} from "@dgck81lnn/koishi-plugin-auto-delete-response"
 
 export const name = "mediawiki-links"
