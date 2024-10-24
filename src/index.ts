@@ -91,8 +91,10 @@ class Wiki {
       const normalized = info.query.normalized?.find(item => item.from === rawTitle)
       const title = normalized ? normalized.to : rawTitle
       const redirect = info.query.redirects?.find(item => item.from === title)
-      if (!redirect && info.query.pages?.find(item => item.title === title)?.missing)
-        continue
+      if (!redirect) {
+        const page = info.query.pages?.find(item => item.title === title)
+        if (page?.missing || page?.invalid) continue
+      }
       const page: (typeof result)[string] = {
         title,
         url: urlResolve(
