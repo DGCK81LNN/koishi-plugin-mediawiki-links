@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-mediawiki-links",
   "description": "Parse double-bracket links to articles on MediaWiki-based websites from messages",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [

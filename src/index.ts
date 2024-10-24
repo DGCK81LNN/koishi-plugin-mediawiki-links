@@ -136,16 +136,21 @@ export async function apply(ctx: Context, config: Config) {
         wikiDict[i] = null
       }
 
-      Wiki.fromEndpoint(ctx, endpoint).then(
-        wiki => {
-          for (const i of prefix) wikiDict[i] = wiki
-        },
-        exc => {
-          if (exc?.message === "context disposed") return
-          logger.error("error init wiki:", endpoint)
-          logger.error(exc)
-        }
-      )
+      const fun = (isRetry = false) =>
+        Wiki.fromEndpoint(ctx, endpoint).then(
+          wiki => {
+            if (isRetry) logger.info("retry success, init wiki", endpoint)
+            else logger.debug("success init wiki", endpoint)
+            for (const i of prefix) wikiDict[i] = wiki
+          },
+          exc => {
+            if (exc?.message === "context disposed") return
+            logger.error("error init wiki", endpoint)
+            logger.error(exc)
+            ctx.setTimeout(() => fun(true), 60000)
+          }
+        )
+      fun()
     }
   })
 
