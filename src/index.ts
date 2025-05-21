@@ -11,6 +11,7 @@ export const inject = {
 
 export interface Config {
   wikis: {
+    disabled: boolean
     prefix: string[]
     endpoint: string
   }[]
@@ -20,6 +21,7 @@ export interface Config {
 export const Config: Schema<Config> = Schema.object({
   wikis: Schema.array(
     Schema.object({
+      disabled: Schema.boolean().default(false).description("禁用该 wiki"),
       prefix: Schema.array(String)
         .role("table")
         .min(1)
@@ -35,6 +37,8 @@ export const Config: Schema<Config> = Schema.object({
     .min(1)
     .default([
       {
+        disabled: false,
+        hidden: false,
         prefix: ["萌百", "mgp"],
         endpoint: "https://zh.moegirl.org.cn/api.php",
       },
@@ -52,13 +56,6 @@ interface WikiConfig {
 }
 
 class Wiki {
-  static get [Symbol.toStringTag]() {
-    return "mediawiki-links Wiki constructor"
-  }
-  get [Symbol.toStringTag]() {
-    return "mediawiki-links Wiki"
-  }
-
   protected constructor(
     protected readonly ctx: Context,
     public readonly config: WikiConfig
@@ -125,28 +122,27 @@ namespace Wiki {
 }
 
 export async function apply(ctx: Context, config: Config) {
-  const logger = ctx.logger(name)
-  //logger.level = 3
-
   const wikiDict: Record<string, Wiki | null> = Object.create(null)
   ctx.on("ready", () => {
-    for (const { prefix, endpoint } of config.wikis) {
+    for (const { disabled, prefix, endpoint } of config.wikis) {
       for (const i of prefix) {
-        if (i in wikiDict) logger.error("duplicate wiki prefix:", i)
+        if (i in wikiDict) ctx.logger.warn("duplicate wiki prefix:", i)
         wikiDict[i] = null
       }
+
+      if (disabled) continue
 
       const fun = (isRetry = false) =>
         Wiki.fromEndpoint(ctx, endpoint).then(
           wiki => {
-            if (isRetry) logger.info("retry success, init wiki", endpoint)
-            else logger.debug("success init wiki", endpoint)
+            if (isRetry) ctx.logger.info("retry success, init wiki", endpoint)
+            else ctx.logger.debug("success init wiki", endpoint)
             for (const i of prefix) wikiDict[i] = wiki
           },
           exc => {
             if (exc?.message === "context disposed") return
-            logger.error("error init wiki", endpoint)
-            logger.error(exc)
+            ctx.logger[isRetry ? "debug" : "error"]("error init wiki", endpoint)
+            ctx.logger[isRetry ? "debug" : "error"](exc)
             ctx.setTimeout(() => fun(true), 60000)
           }
         )
@@ -159,7 +155,7 @@ export async function apply(ctx: Context, config: Config) {
     if (!d) return []
     return d.flatMap(i => {
       if (!wikiDict[i]) {
-        if (!(i in wikiDict)) logger.error("wiki not defined:", i)
+        if (!(i in wikiDict)) ctx.logger.error("wiki not defined:", i)
         return []
       }
       return [wikiDict[i]]
@@ -192,7 +188,7 @@ export async function apply(ctx: Context, config: Config) {
 
       return { title, titleWithoutPrefix, wikis }
     })
-    logger.debug("taskMap", taskMap)
+    ctx.logger.debug("taskMap", taskMap)
     if (!taskMap.size) return
 
     const taskResultMap = new Map<Wiki, Wiki.ResolveTitlesResult>()
@@ -201,12 +197,12 @@ export async function apply(ctx: Context, config: Config) {
         try {
           taskResultMap.set(wiki, await wiki.resolveTitles(titles))
         } catch (exc) {
-          logger.error("error resolving titles", { wiki, titles })
-          logger.error(exc)
+          ctx.logger.error("error resolving titles", { wiki, titles })
+          ctx.logger.error(exc)
         }
       })
     )
-    logger.debug("taskResultMap", taskResultMap)
+    ctx.logger.debug("taskResultMap", taskResultMap)
 
     const results: Record<
       string,
@@ -238,8 +234,8 @@ export async function apply(ctx: Context, config: Config) {
         titles.add(title)
     }
     if (!titles.size) return next()
-    logger.debug("content", session.content)
-    logger.debug("titles", titles)
+    ctx.logger.debug("content", session.content)
+    ctx.logger.debug("titles", titles)
 
     const results = await resolve(titles, session)
     if (!results) return next()
@@ -247,7 +243,7 @@ export async function apply(ctx: Context, config: Config) {
     const lines = Object.values(results)
       .filter(Boolean)
       .map(result =>
-        session.text(
+        session.i18n(
           result.redirectsTo
             ? "mediawiki-links.result-redirected"
             : "mediawiki-links.result",
@@ -258,8 +254,11 @@ export async function apply(ctx: Context, config: Config) {
         )
       )
     if (lines.length) {
-      const response = "<p>" + lines.join("</p><p>") + "</p>"
-      if (ctx.autoDeleteResponse) return ctx.autoDeleteResponse.send(session, response)
+      const response = lines.map(line => h("p", line))
+      if (ctx.autoDeleteResponse) {
+        await ctx.autoDeleteResponse.send(session, response)
+        return []
+      }
       return response
     }
 
@@ -268,25 +267,24 @@ export async function apply(ctx: Context, config: Config) {
 
   async function doResolveSingle({ session }: Argv, title: string) {
     if (!title) {
-      const lines = config.wikis.map(({ prefix }) => {
-        const siteName =
-          wikiDict[prefix[0]]?.config.siteName ?? h.parse(session.text(".not-connected"))
-        return [`${prefix.join(", ")}: `, siteName].flat()
-      })
+      const lines = config.wikis
+        .filter(({ disabled }) => !disabled)
+        .map(({ prefix }) => {
+          const siteName =
+            wikiDict[prefix[0]]?.config.siteName ?? session.i18n(".not-connected")
+          return [`${prefix.join(", ")}: `, siteName].flat()
+        })
       lines.push(
-        h.parse(
-          session.text(".default-wikis", [
-            session.resolve(config.defaultWikis)?.join(", ") ||
-              h.parse(session.text(".none")),
-          ])
-        )
+        session.i18n(".default-wikis", [
+          session.resolve(config.defaultWikis)?.join(", ") || session.i18n(".none"),
+        ])
       )
       return lines.map(l => h("p", l))
     }
     const results = await resolve([title], session)
-    if (!results) return session.text(".require-prefix")
-    if (results[title]) return h.text(results[title].url)
-    return session.text(".not-found", { title })
+    if (!results) return session.i18n(".require-prefix")
+    if (results[title]) return [h.text(results[title].url)]
+    return session.i18n(".not-found", { title })
   }
 
   ctx
@@ -297,12 +295,12 @@ export async function apply(ctx: Context, config: Config) {
       return doResolveSingle(argv, title)
     })
 
-  ctx.i18n.define("", "mediawiki-links", {
+  ctx.i18n.define("zh-CN", "mediawiki-links", {
     "result": "<i>{siteName}</i> — <b>{title}</b>: {url}",
     "result-redirected":
       "<i>{siteName}</i> — <b>{title}</b> (→ <b>{redirectsTo}</b>): {url}",
   })
-  ctx.i18n.define("zh", "commands.wiki", {
+  ctx.i18n.define("zh-CN", "commands.wiki", {
     description: "获取 wiki 条目的链接",
     usage:
       "输入格式：wiki 前缀与一个 wiki 页面的标题，用半角冒号分隔；存在默认 wiki 时，默认 wiki 的前缀可省略。<br/>" +
