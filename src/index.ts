@@ -186,9 +186,11 @@ export async function apply(ctx: Context, config: Config) {
   async function resolve(titles: Iterable<string>, session: Session) {
     const taskMap = new Map<Wiki, string[]>()
     const queries = [...titles].map(title => {
-      const titleParts = title.split(":")
+      const titleWithoutHash = title.split("#")[0].trim()
+      const hash = title.slice(titleWithoutHash.length + 1)
+      const titleParts = titleWithoutHash.split(":")
       let wikis: Wiki[]
-      let titleWithoutPrefix = title
+      let titleStripped = titleWithoutHash
       for (let i = titleParts.length - 1; i > 0; i--) {
         const prefix = titleParts
           .slice(0, i)
@@ -196,18 +198,18 @@ export async function apply(ctx: Context, config: Config) {
           .join(":")
         if (prefix in wikiDict) {
           wikis = [wikiDict[prefix]]
-          titleWithoutPrefix = titleParts.slice(i).join(":")
+          titleStripped = titleParts.slice(i).join(":")
           break
         }
       }
       wikis ??= getDefaultWikis(session)
 
       for (const wiki of wikis) {
-        if (taskMap.has(wiki)) taskMap.get(wiki).push(titleWithoutPrefix)
-        else taskMap.set(wiki, [titleWithoutPrefix])
+        if (taskMap.has(wiki)) taskMap.get(wiki).push(titleStripped)
+        else taskMap.set(wiki, [titleStripped])
       }
 
-      return { title, titleWithoutPrefix, wikis }
+      return { title, titleStripped, hash, wikis }
     })
     ctx.logger.debug("taskMap", taskMap)
     if (!taskMap.size) return
@@ -235,24 +237,30 @@ export async function apply(ctx: Context, config: Config) {
       }
     > = Object.create(null)
     await Promise.all(
-      queries.map(async ({ title, titleWithoutPrefix, wikis }) => {
+      queries.map(async ({ title, titleStripped, hash, wikis }) => {
         for (const wiki of wikis) {
           if (!taskResultMap.has(wiki)) continue
           ctx.logger.debug(
             "await request to %s on %o",
             wiki.config.endpoint,
-            titleWithoutPrefix
+            titleStripped
           )
-          const result = (await taskResultMap.get(wiki))?.[titleWithoutPrefix]
+          const result = (await taskResultMap.get(wiki))?.[titleStripped]
           if (result)
             ctx.logger.debug(
               "got result from %s on %o: %o",
               wiki.config.endpoint,
-              titleWithoutPrefix,
+              titleStripped,
               result
             )
           if (!result) continue
-          results[title] = result && { wiki, ...result }
+          let displayTitle = result.title
+          let url = result.url
+          if (hash) {
+            displayTitle += "#" + hash
+            url = Object.assign(new URL(url), { hash }).toString()
+          }
+          results[title] = { wiki, ...result, title: displayTitle, url }
           break
         }
       })
