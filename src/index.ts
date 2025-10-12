@@ -107,6 +107,7 @@ class Wiki {
     for (let rawTitle of titles) {
       const normalized = info.query.normalized?.find(item => item.from === rawTitle)
       const title = normalized ? normalized.to : rawTitle
+      if (info.query.interwiki?.some(item => item.title === title)) continue
       const redirect = info.query.redirects?.find(item => item.from === title)
       if (!redirect) {
         const page = info.query.pages?.find(item => item.title === title)
@@ -213,15 +214,15 @@ export async function apply(ctx: Context, config: Config) {
 
     const taskResultMap = new Map<Wiki, Promise<Wiki.ResolveTitlesResult>>()
     for (const [wiki, titles] of taskMap) {
-        try {
+      try {
         taskResultMap.set(
           wiki,
           wiki.resolveTitles(titles).catch(() => null)
         )
-        } catch (exc) {
-          ctx.logger.error("error resolving titles", { wiki, titles })
-          ctx.logger.error(exc)
-        }
+      } catch (exc) {
+        ctx.logger.error("error resolving titles", { wiki, titles })
+        ctx.logger.error(exc)
+      }
     }
 
     const results: Record<
@@ -235,8 +236,8 @@ export async function apply(ctx: Context, config: Config) {
     > = Object.create(null)
     await Promise.all(
       queries.map(async ({ title, titleWithoutPrefix, wikis }) => {
-      for (const wiki of wikis) {
-        if (!taskResultMap.has(wiki)) continue
+        for (const wiki of wikis) {
+          if (!taskResultMap.has(wiki)) continue
           ctx.logger.debug(
             "await request to %s on %o",
             wiki.config.endpoint,
@@ -250,10 +251,10 @@ export async function apply(ctx: Context, config: Config) {
               titleWithoutPrefix,
               result
             )
-        if (!result) continue
-        results[title] = result && { wiki, ...result }
-        break
-      }
+          if (!result) continue
+          results[title] = result && { wiki, ...result }
+          break
+        }
       })
     )
     return results
