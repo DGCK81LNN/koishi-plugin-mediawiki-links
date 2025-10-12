@@ -62,10 +62,16 @@ class Wiki {
   ) {}
 
   static async fromEndpoint(ctx: Context, endpoint: string) {
-    const siteInfo = await ctx.http.get(
-      endpoint + "?format=json&formatversion=2&action=query&meta=siteinfo&siprop=general",
-      { responseType: "json" }
-    )
+    const siteInfo = await ctx.http.get(endpoint, {
+      params: {
+        format: "json",
+        formatversion: "2",
+        action: "query",
+        meta: "siteinfo",
+        siprop: "general",
+      },
+      responseType: "json",
+    })
     const siteName = siteInfo.query.general.sitename
     const baseURL = siteInfo.query.general.base
     const articlePath = siteInfo.query.general.articlepath
@@ -78,10 +84,24 @@ class Wiki {
   }
 
   async resolveTitles(titles: string[]) {
-    const titlesStr = encodeURIComponent(titles.join("|"))
-    const info = await this.ctx.http.get(
-      `${this.config.endpoint}?format=json&formatversion=2&action=query&titles=${titlesStr}&redirects=1`,
-      { responseType: "json" }
+    const titlesStr = titles.join("|")
+    const params = {
+      format: "json",
+      formatversion: "2",
+      action: "query",
+      titles: titlesStr,
+      redirects: "1",
+    }
+    this.ctx.logger.debug("request to %s on %o", this.config.endpoint, titles)
+    const info = await this.ctx.http.get(this.config.endpoint, {
+      params,
+      responseType: "json",
+    })
+    this.ctx.logger.debug(
+      "response from %s on %o: %o",
+      this.config.endpoint,
+      titles,
+      info
     )
     const result: Wiki.ResolveTitlesResult = Object.create(null)
     for (let rawTitle of titles) {
@@ -191,18 +211,18 @@ export async function apply(ctx: Context, config: Config) {
     ctx.logger.debug("taskMap", taskMap)
     if (!taskMap.size) return
 
-    const taskResultMap = new Map<Wiki, Wiki.ResolveTitlesResult>()
-    await Promise.all(
-      Array.from(taskMap, async ([wiki, titles]) => {
+    const taskResultMap = new Map<Wiki, Promise<Wiki.ResolveTitlesResult>>()
+    for (const [wiki, titles] of taskMap) {
         try {
-          taskResultMap.set(wiki, await wiki.resolveTitles(titles))
+        taskResultMap.set(
+          wiki,
+          wiki.resolveTitles(titles).catch(() => null)
+        )
         } catch (exc) {
           ctx.logger.error("error resolving titles", { wiki, titles })
           ctx.logger.error(exc)
         }
-      })
-    )
-    ctx.logger.debug("taskResultMap", taskResultMap)
+    }
 
     const results: Record<
       string,
@@ -213,15 +233,29 @@ export async function apply(ctx: Context, config: Config) {
         url: string
       }
     > = Object.create(null)
-    for (const { title, titleWithoutPrefix, wikis } of queries) {
+    await Promise.all(
+      queries.map(async ({ title, titleWithoutPrefix, wikis }) => {
       for (const wiki of wikis) {
         if (!taskResultMap.has(wiki)) continue
-        const result = taskResultMap.get(wiki)[titleWithoutPrefix]
+          ctx.logger.debug(
+            "await request to %s on %o",
+            wiki.config.endpoint,
+            titleWithoutPrefix
+          )
+          const result = (await taskResultMap.get(wiki))?.[titleWithoutPrefix]
+          if (result)
+            ctx.logger.debug(
+              "got result from %s on %o: %o",
+              wiki.config.endpoint,
+              titleWithoutPrefix,
+              result
+            )
         if (!result) continue
         results[title] = result && { wiki, ...result }
         break
       }
-    }
+      })
+    )
     return results
   }
 
@@ -308,7 +342,7 @@ export async function apply(ctx: Context, config: Config) {
     messages: {
       "require-prefix": "当前无默认 wiki，请指定 wiki 前缀。",
       "not-found": "未找到名为 {title} 的条目。",
-      "not-connected": "[未连接，无法使用！]",
+      "not-connected": "[连接中…]",
       "default-wikis": "当前默认 wiki：{0}",
       "none": "(无)",
     },
