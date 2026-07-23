@@ -1,4 +1,4 @@
-import { Argv, Computed, Context, Schema, Session, h } from "koishi"
+import { Argv, Computed, Context, type Fragment, Schema, Session, h } from "koishi"
 import { resolve as urlResolve } from "url"
 
 import type {} from "@dgck81lnn/koishi-plugin-auto-delete-response"
@@ -28,10 +28,10 @@ export const Config: Schema<Config> = Schema.object({
         .description("wiki 名称（同时用作跨 wiki 前缀）。不同 wiki 间不可重复。"),
       endpoint: Schema.string()
         .description(
-          "维基的 api.php URL。通常位于网站的 `/api.php` 或 `/w/api.php`。可到 wiki 的 Special:Version 页面查询。"
+          "维基的 api.php URL。通常位于网站的 `/api.php` 或 `/w/api.php`。可到 wiki 的 Special:Version 页面查询。",
         )
         .role("textarea"),
-    })
+    }),
   )
     .description("可解析的 wiki 列表。")
     .min(1)
@@ -44,7 +44,7 @@ export const Config: Schema<Config> = Schema.object({
       },
     ]),
   defaultWikis: Schema.computed(Schema.array(String).role("table")).description(
-    "未指定 wiki 前缀时默认尝试查询哪些 wiki。"
+    "未指定 wiki 前缀时默认尝试查询哪些 wiki。",
   ),
 })
 
@@ -55,10 +55,27 @@ interface WikiConfig {
   readonly articlePath: string
 }
 
+interface ResolveResult {
+  results: Record<
+    string,
+    {
+      wiki: Wiki
+      title: string
+      redirectsTo?: string
+      url: string
+    }
+  >
+  failedWikiNames: string[]
+}
+
+function getFailedWikiName(prefix: string, wiki: Wiki | null) {
+  return wiki?.config.siteName ?? prefix
+}
+
 class Wiki {
   protected constructor(
     protected readonly ctx: Context,
-    public readonly config: WikiConfig
+    public readonly config: WikiConfig,
   ) {}
 
   static async fromEndpoint(ctx: Context, endpoint: string) {
@@ -101,7 +118,7 @@ class Wiki {
       "response from %s on %o: %o",
       this.config.endpoint,
       titles,
-      info
+      info,
     )
     const result: Wiki.ResolveTitlesResult = Object.create(null)
     for (let rawTitle of titles) {
@@ -117,7 +134,7 @@ class Wiki {
         title,
         url: urlResolve(
           this.config.baseURL,
-          this.config.articlePath.replace("$1", encodeURI(title).replaceAll("%20", "_"))
+          this.config.articlePath.replace("$1", encodeURI(title).replaceAll("%20", "_")),
         ),
       }
       if (redirect) {
@@ -165,7 +182,7 @@ export async function apply(ctx: Context, config: Config) {
             ctx.logger[isRetry ? "debug" : "error"]("error init wiki", endpoint)
             ctx.logger[isRetry ? "debug" : "error"](exc)
             ctx.setTimeout(() => fun(true), 60000)
-          }
+          },
         )
       fun()
     }
@@ -175,21 +192,25 @@ export async function apply(ctx: Context, config: Config) {
     const d = session.resolve(config.defaultWikis)
     if (!d) return []
     return d.flatMap(i => {
-      if (!wikiDict[i]) {
-        if (!(i in wikiDict)) ctx.logger.error("wiki not defined:", i)
+      if (!(i in wikiDict)) {
+        ctx.logger.error("wiki not defined:", i)
         return []
       }
-      return [wikiDict[i]]
+      return [{ prefix: i, wiki: wikiDict[i] }]
     })
   }
 
-  async function resolve(titles: Iterable<string>, session: Session) {
+  async function resolve(
+    titles: Iterable<string>,
+    session: Session,
+  ): Promise<ResolveResult | undefined> {
     const taskMap = new Map<Wiki, string[]>()
+    const failedWikiNames = new Set<string>()
     const queries = [...titles].map(title => {
       const titleWithoutHash = title.split("#")[0].trim()
       const hash = title.slice(titleWithoutHash.length + 1)
       const titleParts = titleWithoutHash.split(":")
-      let wikis: Wiki[]
+      let wikis: Array<{ prefix: string; wiki: Wiki | null }>
       let titleStripped = titleWithoutHash
       for (let i = titleParts.length - 1; i > 0; i--) {
         const prefix = titleParts
@@ -197,14 +218,20 @@ export async function apply(ctx: Context, config: Config) {
           .map(s => s.trim())
           .join(":")
         if (prefix in wikiDict) {
-          wikis = [wikiDict[prefix]]
+          wikis = [{ prefix, wiki: wikiDict[prefix] }]
+          if (!wikiDict[prefix])
+            failedWikiNames.add(getFailedWikiName(prefix, wikiDict[prefix]))
           titleStripped = titleParts.slice(i).join(":")
           break
         }
       }
       wikis ??= getDefaultWikis(session)
 
-      for (const wiki of wikis) {
+      for (const { prefix, wiki } of wikis) {
+        if (!wiki) {
+          failedWikiNames.add(getFailedWikiName(prefix, wiki))
+          continue
+        }
         if (taskMap.has(wiki)) taskMap.get(wiki).push(titleStripped)
         else taskMap.set(wiki, [titleStripped])
       }
@@ -212,38 +239,44 @@ export async function apply(ctx: Context, config: Config) {
       return { title, titleStripped, hash, wikis }
     })
     ctx.logger.debug("taskMap", taskMap)
-    if (!taskMap.size) return
+    if (!taskMap.size) {
+      if (failedWikiNames.size) {
+        return {
+          results: Object.create(null),
+          failedWikiNames: [...failedWikiNames],
+        }
+      }
+      return
+    }
 
     const taskResultMap = new Map<Wiki, Promise<Wiki.ResolveTitlesResult>>()
     for (const [wiki, titles] of taskMap) {
       try {
         taskResultMap.set(
           wiki,
-          wiki.resolveTitles(titles).catch(() => null)
+          wiki.resolveTitles(titles).catch(exc => {
+            ctx.logger.error("error resolving titles", { wiki, titles })
+            ctx.logger.error(exc)
+            failedWikiNames.add(getFailedWikiName(wiki.config.siteName, wiki))
+            return null
+          }),
         )
       } catch (exc) {
         ctx.logger.error("error resolving titles", { wiki, titles })
         ctx.logger.error(exc)
+        failedWikiNames.add(getFailedWikiName(wiki.config.siteName, wiki))
       }
     }
 
-    const results: Record<
-      string,
-      {
-        wiki: Wiki
-        title: string
-        redirectsTo?: string
-        url: string
-      }
-    > = Object.create(null)
+    const results: ResolveResult["results"] = Object.create(null)
     await Promise.all(
       queries.map(async ({ title, titleStripped, hash, wikis }) => {
-        for (const wiki of wikis) {
-          if (!taskResultMap.has(wiki)) continue
+        for (const { wiki } of wikis) {
+          if (!wiki || !taskResultMap.has(wiki)) continue
           ctx.logger.debug(
             "await request to %s on %o",
             wiki.config.endpoint,
-            titleStripped
+            titleStripped,
           )
           const result = (await taskResultMap.get(wiki))?.[titleStripped]
           if (result)
@@ -251,7 +284,7 @@ export async function apply(ctx: Context, config: Config) {
               "got result from %s on %o: %o",
               wiki.config.endpoint,
               titleStripped,
-              result
+              result,
             )
           if (!result) continue
           let displayTitle = result.title
@@ -263,16 +296,16 @@ export async function apply(ctx: Context, config: Config) {
           results[title] = { wiki, ...result, title: displayTitle, url }
           break
         }
-      })
+      }),
     )
-    return results
+    return { results, failedWikiNames: [...failedWikiNames] }
   }
 
   ctx.middleware(async (session, next) => {
     var titles = new Set<string>()
     for (const el of h.select(session.elements, "text")) {
       for (const [, title] of (el.attrs.content as string).matchAll(
-        /\[\[\s*([^\x00-\x1f<>[\]|{}\x7f]+)\s*(?:\|.*?)?\]\]/g
+        /\[\[\s*([^\x00-\x1f<>[\]|{}\x7f]+)\s*(?:\|.*?)?\]\]/g,
       ))
         titles.add(title)
     }
@@ -280,21 +313,23 @@ export async function apply(ctx: Context, config: Config) {
     ctx.logger.debug("content", session.content)
     ctx.logger.debug("titles", titles)
 
-    const results = await resolve(titles, session)
-    if (!results) return next()
+    const result = await resolve(titles, session)
+    if (!result) return next()
+    const { results } = result
+    if (!Object.keys(results).length) return next()
 
     const lines = Object.values(results)
       .filter(Boolean)
       .map(result =>
         session.i18n(
-          result.redirectsTo
-            ? "mediawiki-links.result-redirected"
-            : "mediawiki-links.result",
+          result.redirectsTo ?
+            "mediawiki-links.result-redirected"
+          : "mediawiki-links.result",
           {
             ...result,
             siteName: result.wiki.config.siteName,
-          }
-        )
+          },
+        ),
       )
     if (lines.length) {
       const response = lines.map(line => h("p", line))
@@ -320,14 +355,28 @@ export async function apply(ctx: Context, config: Config) {
       lines.push(
         session.i18n(".default-wikis", [
           session.resolve(config.defaultWikis)?.join(", ") || session.i18n(".none"),
-        ])
+        ]),
       )
       return lines.map(l => h("p", l))
     }
-    const results = await resolve([title], session)
-    if (!results) return session.i18n(".require-prefix")
-    if (results[title]) return [h.text(results[title].url)]
-    return session.i18n(".not-found", { title })
+    const result = await resolve([title], session)
+    if (!result) return send(session.i18n(".require-prefix"))
+    if (result.results[title]) return [h.text(result.results[title].url)]
+    if (result.failedWikiNames.length) {
+      return send(
+        session.i18n(".not-found-failed", {
+          title,
+          wikis: result.failedWikiNames.join(", "),
+        }),
+      )
+    }
+    return send(session.i18n(".not-found", { title }))
+
+    function send(fragment: Fragment) {
+      if (ctx.autoDeleteResponse) ctx.autoDeleteResponse.send(session, fragment)
+      else session.send(fragment)
+      return "" as const
+    }
   }
 
   ctx
@@ -351,6 +400,7 @@ export async function apply(ctx: Context, config: Config) {
     messages: {
       "require-prefix": "当前无默认 wiki，请指定 wiki 前缀。",
       "not-found": "未找到名为 {title} 的条目。",
+      "not-found-failed": "{wikis} 查询失败，未找到名为 {title} 的条目。",
       "not-connected": "[连接中…]",
       "default-wikis": "当前默认 wiki：{0}",
       "none": "(无)",
