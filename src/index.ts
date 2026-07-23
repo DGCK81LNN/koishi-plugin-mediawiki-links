@@ -1,4 +1,13 @@
-import { Argv, Computed, Context, type Fragment, Schema, Session, h } from "koishi"
+import {
+  Argv,
+  type Channel,
+  Computed,
+  Context,
+  type Fragment,
+  Schema,
+  Session,
+  h,
+} from "koishi"
 import { resolve as urlResolve } from "url"
 
 import type {} from "@dgck81lnn/koishi-plugin-auto-delete-response"
@@ -6,7 +15,7 @@ import type {} from "@dgck81lnn/koishi-plugin-auto-delete-response"
 export const name = "mediawiki-links"
 export const inject = {
   required: ["http"],
-  optional: ["autoDeleteResponse"],
+  optional: ["database", "autoDeleteResponse"],
 }
 
 export interface Config {
@@ -47,6 +56,12 @@ export const Config: Schema<Config> = Schema.object({
     "未指定 wiki 前缀时默认尝试查询哪些 wiki。",
   ),
 })
+
+declare module "koishi" {
+  interface Channel {
+    defaultWikis: string[]
+  }
+}
 
 interface WikiConfig {
   readonly endpoint: string
@@ -160,6 +175,12 @@ namespace Wiki {
 }
 
 export async function apply(ctx: Context, config: Config) {
+  ctx.inject(["database"], ctx =>
+    ctx.model.extend("channel", {
+      defaultWikis: "list",
+    }),
+  )
+
   const wikiDict: Record<string, Wiki | null> = Object.create(null)
   ctx.on("ready", () => {
     for (const { disabled, prefix, endpoint } of config.wikis) {
@@ -188,10 +209,13 @@ export async function apply(ctx: Context, config: Config) {
     }
   })
 
+  function getDefaultWikiPrefixes(session: Session) {
+    let d = (session.channel as Channel.Observed)?.defaultWikis
+    if (!d?.length) d = session.resolve(config.defaultWikis)
+    return d ?? []
+  }
   function getDefaultWikis(session: Session) {
-    const d = session.resolve(config.defaultWikis)
-    if (!d) return []
-    return d.flatMap(i => {
+    return getDefaultWikiPrefixes(session).flatMap(i => {
       if (!(i in wikiDict)) {
         ctx.logger.error("wiki not defined:", i)
         return []
@@ -301,12 +325,22 @@ export async function apply(ctx: Context, config: Config) {
     return { results, failedWikiNames: [...failedWikiNames] }
   }
 
+  const pattern = /\[\[\s*([^\x00-\x1f<>[\]|{}\x7f]+)\s*(?:\|.*?)?\]\]/g
+  ctx.before("attach-channel", (session, fields) => {
+    const texts = h.select(session.elements, "text")
+    if (
+      texts.some(el => {
+        pattern.lastIndex = 0
+        return pattern.test(el.attrs.content as string)
+      })
+    )
+      fields.add("defaultWikis")
+  })
   ctx.middleware(async (session, next) => {
     var titles = new Set<string>()
     for (const el of h.select(session.elements, "text")) {
-      for (const [, title] of (el.attrs.content as string).matchAll(
-        /\[\[\s*([^\x00-\x1f<>[\]|{}\x7f]+)\s*(?:\|.*?)?\]\]/g,
-      ))
+      pattern.lastIndex = 0
+      for (const [, title] of (el.attrs.content as string).matchAll(pattern))
         titles.add(title)
     }
     if (!titles.size) return next()
@@ -354,10 +388,10 @@ export async function apply(ctx: Context, config: Config) {
         })
       lines.push(
         session.i18n(".default-wikis", [
-          session.resolve(config.defaultWikis)?.join(", ") || session.i18n(".none"),
+          getDefaultWikiPrefixes(session).join(", ") || session.i18n(".none"),
         ]),
       )
-      return lines.map(l => h("p", l))
+      return send(lines.flatMap(l => [...l, h("br")]).slice(0, -1))
     }
     const result = await resolve([title], session)
     if (!result) return send(session.i18n(".require-prefix"))
@@ -380,8 +414,29 @@ export async function apply(ctx: Context, config: Config) {
   }
 
   ctx
-    .command("wiki [title:text]", { showWarning: true, checkUnknown: true })
+    .command("wiki [title:rawtext]", { showWarning: true, checkUnknown: true })
+    .channelFields(["defaultWikis"])
+    .option("setDefault", "-d [prefixes:rawtext]", { authority: 2 })
+    .option("resetDefault", "-D", { authority: 2 })
     .action((argv, title) => {
+      const { options, session } = argv
+      if (options.setDefault) {
+        const prefixes = options.setDefault
+          .split(",")
+          .map(i => i.trim())
+          .filter(i => i)
+        const invalidPrefixes = prefixes.filter(i => !(i in wikiDict))
+        if (invalidPrefixes.length)
+          return session.i18n(".prefix-not-found", [invalidPrefixes.join(", ")])
+        session.channel.defaultWikis = prefixes
+        return session.i18n(".default-wikis-set", [prefixes.join(", ")])
+      }
+      if (options.resetDefault) {
+        session.channel.defaultWikis = []
+        return session.i18n(".default-wikis-set", [
+          getDefaultWikiPrefixes(session).join(", "),
+        ])
+      }
       if (ctx.autoDeleteResponse)
         return ctx.autoDeleteResponse.action(doResolveSingle)(argv, title)
       return doResolveSingle(argv, title)
@@ -397,6 +452,10 @@ export async function apply(ctx: Context, config: Config) {
     usage:
       "输入格式：wiki 前缀与一个 wiki 页面的标题，用半角冒号分隔；存在默认 wiki 时，默认 wiki 的前缀可省略。<br/>" +
       "输入为空时，显示所有可用 wiki 及对应前缀列表。",
+    options: {
+      setDefault: "设置当前频道的默认 wiki 前缀列表，多个前缀用半角逗号分隔",
+      resetDefault: "重置当前频道的默认 wiki 前缀列表",
+    },
     messages: {
       "require-prefix": "当前无默认 wiki，请指定 wiki 前缀。",
       "not-found": "未找到名为 {title} 的条目。",
@@ -404,6 +463,8 @@ export async function apply(ctx: Context, config: Config) {
       "not-connected": "[连接中…]",
       "default-wikis": "当前默认 wiki：{0}",
       "none": "(无)",
+      "default-wikis-set": "已将当前频道的默认 wiki 前缀设置为：{0}",
+      "prefix-not-found": "未找到前缀为 {0} 的 wiki。",
     },
   })
 }
