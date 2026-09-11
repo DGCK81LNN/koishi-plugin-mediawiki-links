@@ -378,21 +378,6 @@ export async function apply(ctx: Context, config: Config) {
   })
 
   async function doResolveSingle({ session }: Argv, title: string) {
-    if (!title) {
-      const lines = config.wikis
-        .filter(({ disabled }) => !disabled)
-        .map(({ prefix }) => {
-          const siteName =
-            wikiDict[prefix[0]]?.config.siteName ?? session.i18n(".not-connected")
-          return [`${prefix.join(", ")}: `, siteName].flat()
-        })
-      lines.push(
-        session.i18n(".default-wikis", [
-          getDefaultWikiPrefixes(session).join(", ") || session.i18n(".none"),
-        ]),
-      )
-      return send(lines.flatMap(l => [...l, h("br")]).slice(0, -1))
-    }
     const result = await resolve([title], session)
     if (!result) return send(session.i18n(".require-prefix"))
     if (result.results[title]) return [h.text(result.results[title].url)]
@@ -416,6 +401,7 @@ export async function apply(ctx: Context, config: Config) {
   ctx
     .command("wiki [title:rawtext]", { showWarning: true, checkUnknown: true })
     .channelFields(["defaultWikis"])
+    .option("list", "-l")
     .option("setDefault", "-d [prefixes:rawtext]", { authority: 2 })
     .option("resetDefault", "-D", { authority: 2 })
     .action((argv, title) => {
@@ -437,6 +423,20 @@ export async function apply(ctx: Context, config: Config) {
           getDefaultWikiPrefixes(session).join(", "),
         ])
       }
+      if (options.list) {
+        const lines = config.wikis
+          .filter(({ disabled }) => !disabled)
+          .map(({ prefix }) => {
+            const siteName =
+              wikiDict[prefix[0]]?.config.siteName ?? session.i18n(".not-connected")
+            return [`${prefix.join(", ")}: `, siteName].flat()
+          })
+        return lines.flatMap(l => [...l, h("br")]).slice(0, -1)
+      }
+      if (!title)
+        return session.i18n(".default-wikis", [
+          getDefaultWikiPrefixes(session).join(", ") || session.i18n(".none"),
+        ])
       if (ctx.autoDeleteResponse)
         return ctx.autoDeleteResponse.action(doResolveSingle)(argv, title)
       return doResolveSingle(argv, title)
@@ -451,8 +451,9 @@ export async function apply(ctx: Context, config: Config) {
     description: "获取 wiki 条目的链接",
     usage:
       "输入格式：wiki 前缀与一个 wiki 页面的标题，用半角冒号分隔；存在默认 wiki 时，默认 wiki 的前缀可省略。<br/>" +
-      "输入为空时，显示所有可用 wiki 及对应前缀列表。",
+      "输入为空时，显示当前的默认 wiki。",
     options: {
+      list: "列出可用的 wiki 前缀及其对应的 wiki 名称",
       setDefault: "设置当前频道的默认 wiki 前缀列表，多个前缀用半角逗号分隔",
       resetDefault: "重置当前频道的默认 wiki 前缀列表",
     },
