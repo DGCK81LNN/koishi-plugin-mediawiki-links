@@ -366,7 +366,7 @@ export async function apply(ctx: Context, config: Config) {
         ),
       )
     if (lines.length) {
-      const response = lines.map(line => h("p", line))
+      const response = lines.flatMap(line => [...line, h("br")]).slice(0, -1)
       if (ctx.autoDeleteResponse) {
         await ctx.autoDeleteResponse.send(session, response)
         return []
