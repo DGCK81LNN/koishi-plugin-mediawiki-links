@@ -23,6 +23,7 @@ export interface Config {
     disabled: boolean
     prefix: string[]
     endpoint: string
+    articlePath?: string
   }[]
   defaultWikis: Computed<string[]>
 }
@@ -40,6 +41,11 @@ export const Config: Schema<Config> = Schema.object({
           "维基的 api.php URL。通常位于网站的 `/api.php` 或 `/w/api.php`。可到 wiki 的 Special:Version 页面查询。",
         )
         .role("textarea"),
+      articlePath: Schema.string()
+        .description(
+          "文章路径模板，使用 `$1` 代表条目标题；留空时使用 wiki API 返回的路径。",
+        )
+        .role("link"),
     }),
   )
     .description("可解析的 wiki 列表。")
@@ -50,6 +56,7 @@ export const Config: Schema<Config> = Schema.object({
         hidden: false,
         prefix: ["萌百", "mgp"],
         endpoint: "https://zh.moegirl.org.cn/api.php",
+        articlePath: undefined,
       },
     ]),
   defaultWikis: Schema.computed(Schema.array(String).role("table")).description(
@@ -63,11 +70,14 @@ declare module "koishi" {
   }
 }
 
-interface WikiConfig {
-  readonly endpoint: string
+interface WikiDefinition {
+  endpoint: string
+  articlePath?: string
+}
+
+interface WikiConfig extends Readonly<Required<WikiDefinition>> {
   readonly siteName: string
   readonly baseURL: string
-  readonly articlePath: string
 }
 
 interface ResolveResult {
@@ -93,7 +103,10 @@ class Wiki {
     public readonly config: WikiConfig,
   ) {}
 
-  static async fromEndpoint(ctx: Context, endpoint: string) {
+  static async fromDefinition(
+    ctx: Context,
+    { endpoint, articlePath }: WikiDefinition,
+  ) {
     const siteInfo = await ctx.http.get(endpoint, {
       params: {
         format: "json",
@@ -106,7 +119,7 @@ class Wiki {
     })
     const siteName = siteInfo.query.general.sitename
     const baseURL = siteInfo.query.general.base
-    const articlePath = siteInfo.query.general.articlepath
+    articlePath ??= siteInfo.query.general.articlepath
     return new this(ctx, {
       endpoint,
       siteName,
@@ -183,7 +196,7 @@ export async function apply(ctx: Context, config: Config) {
 
   const wikiDict: Record<string, Wiki | null> = Object.create(null)
   ctx.on("ready", () => {
-    for (const { disabled, prefix, endpoint } of config.wikis) {
+    for (const { disabled, prefix, endpoint, articlePath } of config.wikis) {
       for (const i of prefix) {
         if (i in wikiDict) ctx.logger.warn("duplicate wiki prefix:", i)
         wikiDict[i] = null
@@ -192,7 +205,7 @@ export async function apply(ctx: Context, config: Config) {
       if (disabled) continue
 
       const fun = (isRetry = false) =>
-        Wiki.fromEndpoint(ctx, endpoint).then(
+        Wiki.fromDefinition(ctx, { endpoint, articlePath }).then(
           wiki => {
             if (isRetry) ctx.logger.info("retry success, init wiki", endpoint)
             else ctx.logger.debug("success init wiki", endpoint)
